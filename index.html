@@ -121,9 +121,11 @@
         const INT_SA = 0.040;
         const INT_MA = 0.040;
         const INT_RA = 0.040;
-        const BRS_2024 = 102900;
-        const FRS_2024 = 205800;
-        const ERS_2024 = 308700;
+        // Retirement Sums (2025 Base - Announced Dec 2024)
+        // ERS is raised to 4x BRS starting 2025
+        const BRS_CURRENT = 106500;
+        const FRS_CURRENT = 213000;
+        const ERS_CURRENT = 426000; 
         const RETIREMENT_SUM_INFLATION = 0.035;
         const CPF_LIFE_PAYOUT_FACTOR = 0.0078; 
 
@@ -190,11 +192,12 @@
                     // Age 55 Withdrawal & RA Formation
                     if (age === 55 && !isRAFormed) {
                         const yearsTo55 = 55 - currentAge;
+                        // Calculate Projected Retirement Sums based on 2025 values inflated to target year
                         const inflationFactor = Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                         
-                        const projBRS = BRS_2024 * inflationFactor;
-                        const projFRS = FRS_2024 * inflationFactor;
-                        const projERS = ERS_2024 * inflationFactor;
+                        const projBRS = BRS_CURRENT * inflationFactor;
+                        const projFRS = FRS_CURRENT * inflationFactor;
+                        const projERS = ERS_CURRENT * inflationFactor;
 
                         let requiredRA = 0;
                         if (retirementScheme === 'BRS') requiredRA = projBRS;
@@ -325,9 +328,10 @@
             const scenarios = useMemo(() => {
                 if (!simulation.length) return null;
                 const yearsTo55 = 55 - currentAge;
-                const projectedFRS = FRS_2024 * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
-                const projectedBRS = BRS_2024 * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
-                const projectedERS = ERS_2024 * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
+                // Use new 2025 base values for projection
+                const projectedFRS = FRS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
+                const projectedBRS = BRS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
+                const projectedERS = ERS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                 const raAt65 = age65Data ? age65Data.ra : 0;
                 const monthlyPayout = raAt65 * CPF_LIFE_PAYOUT_FACTOR;
 
