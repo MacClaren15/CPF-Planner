@@ -16,7 +16,6 @@
     <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
     
     <!-- 4. Recharts (Stable 2.10.3) -->
-    <!-- Using 2.10.3 because newer UMD versions can be unstable in standalone HTML -->
     <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.10.3/Recharts.min.js"></script>
     
     <!-- 5. Babel (Compiles JSX) -->
@@ -44,7 +43,7 @@
         // --- 1. SETUP & UTILS ---
         const { useState, useEffect, useMemo } = React;
         const { 
-            LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area 
+            LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, BarChart, Bar 
         } = Recharts;
 
         // --- 2. ICONS ---
@@ -89,6 +88,18 @@
                 <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
             </svg>
         );
+        
+        const HomeIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 text-orange-500">
+                <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+        );
+
+        const CoinsIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 text-teal-600">
+                <circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m7.1 13.8 3-3.2"/><path d="M11 13h1v-3"/>
+            </svg>
+        );
 
         // --- 3. DATA CONSTANTS ---
         const CONTRIBUTION_RATES = [
@@ -121,13 +132,18 @@
         const INT_SA = 0.040;
         const INT_MA = 0.040;
         const INT_RA = 0.040;
-        // Retirement Sums (2025 Base - Announced Dec 2024)
-        // ERS is raised to 4x BRS starting 2025
+        // Retirement Sums (2025 Base)
         const BRS_CURRENT = 106500;
         const FRS_CURRENT = 213000;
         const ERS_CURRENT = 426000; 
         const RETIREMENT_SUM_INFLATION = 0.035;
-        const CPF_LIFE_PAYOUT_FACTOR = 0.0078; 
+        
+        // CPF LIFE ESTIMATION FACTORS (Approximate)
+        const CPF_LIFE_PLANS = {
+            'Standard': { initialFactor: 0.0078, growth: 0 }, 
+            'Escalating': { initialFactor: 0.0063, growth: 0.02 }, 
+            'Basic': { initialFactor: 0.0070, growth: 0 } 
+        };
 
         // --- 4. HELPER LOGIC ---
         const formatMoney = (val) => 
@@ -160,10 +176,19 @@
             const [incrementRate, setIncrementRate] = useState(2);
             const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
 
-            // State: Withdrawal Inputs
+            // Housing Inputs
+            const [housingUsed, setHousingUsed] = useState(0); 
+            const [monthlyHousingDeduction, setMonthlyHousingDeduction] = useState(0); 
+            const [housingLoanEndYear, setHousingLoanEndYear] = useState(currentYear + 20);
+
+            // Strategy Inputs
             const [withdrawalAge] = useState(55);
             const [desiredWithdrawal, setDesiredWithdrawal] = useState(0);
             const [retirementScheme, setRetirementScheme] = useState('FRS');
+            const [cpfLifePlan, setCpfLifePlan] = useState('Standard'); 
+            
+            // Payout View State (NEW)
+            const [payoutViewRange, setPayoutViewRange] = useState([65, 75]); 
 
             // Derived State: Simulation Results
             const simulation = useMemo(() => {
@@ -175,8 +200,15 @@
                 let curSalary = monthlySalary;
                 let curYear = currentYear;
                 let isRAFormed = false;
+                
+                // Track Refund Account
+                let refundAccount = housingUsed;
+                let cumulativeHousingPrincipal = housingUsed;
 
-                const runToAge = Math.max(targetAge, 65);
+                // Track Payouts
+                let baseMonthlyPayout = 0;
+
+                const runToAge = Math.max(targetAge, 95); // Ensure calculation runs deep enough
 
                 for (let age = currentAge; age <= runToAge; age++) {
                     // BHS Cap Logic
@@ -189,10 +221,9 @@
                         }
                     }
 
-                    // Age 55 Withdrawal & RA Formation
+                    // --- AGE 55 LOGIC: RA CREATION & SA CLOSURE ---
                     if (age === 55 && !isRAFormed) {
                         const yearsTo55 = 55 - currentAge;
-                        // Calculate Projected Retirement Sums based on 2025 values inflated to target year
                         const inflationFactor = Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                         
                         const projBRS = BRS_CURRENT * inflationFactor;
@@ -204,32 +235,32 @@
                         else if (retirementScheme === 'ERS') requiredRA = projERS;
                         else requiredRA = projFRS;
 
-                        const totalAvailable = curOA + curSA;
-                        let amountToRA = Math.min(totalAvailable, requiredRA);
-                        curRA = amountToRA;
+                        // 1. Fill RA from SA first
+                        let amountFromSA = Math.min(curSA, requiredRA);
+                        curRA += amountFromSA;
+                        let remainingSA = curSA - amountFromSA;
                         
-                        let remainingToDeduct = amountToRA;
-                        if (curSA >= remainingToDeduct) {
-                            curSA -= remainingToDeduct;
-                            remainingToDeduct = 0;
-                        } else {
-                            remainingToDeduct -= curSA;
-                            curSA = 0;
-                            curOA -= remainingToDeduct; 
+                        // 2. Close SA Account
+                        curOA += remainingSA;
+                        curSA = 0; 
+
+                        // 3. Fill Shortfall from OA 
+                        if (curRA < requiredRA) {
+                            let shortfall = requiredRA - curRA;
+                            let amountFromOA = Math.min(curOA, shortfall);
+                            curRA += amountFromOA;
+                            curOA -= amountFromOA;
                         }
 
+                        // 4. User Withdrawal
                         let withdrawAmount = desiredWithdrawal;
                         if (curOA >= withdrawAmount) {
                             curOA -= withdrawAmount;
                         } else {
-                            withdrawAmount -= curOA;
+                            withdrawAmount = curOA;
                             curOA = 0;
-                            if (curSA >= withdrawAmount) {
-                                curSA -= withdrawAmount;
-                            } else {
-                                curSA = 0; 
-                            }
                         }
+                        
                         isRAFormed = true;
                     }
 
@@ -247,44 +278,92 @@
                     const contribSA = totalAnnualContribution * saRatio;
                     const contribMA = totalAnnualContribution * maRatio;
 
-                    // Interest
+                    // Housing Deduction
+                    let tempOA = curOA + contribOA;
+                    let annualHousingDeduction = 0;
+                    
+                    if (curYear <= housingLoanEndYear) {
+                        const requiredDeduction = monthlyHousingDeduction * 12;
+                        annualHousingDeduction = Math.min(tempOA, requiredDeduction);
+                        tempOA -= annualHousingDeduction;
+                    }
+
+                    // Update Refund Account
+                    const refundInterest = refundAccount * INT_OA;
+                    refundAccount += refundInterest + annualHousingDeduction;
+                    cumulativeHousingPrincipal += annualHousingDeduction;
+
+                    curOA = tempOA; 
+
+                    // --- INTEREST CALCULATION ---
                     let intOA = curOA * INT_OA;
-                    let intSA = curSA * INT_SA;
+                    let intSA = curSA * INT_SA; 
                     let intMA = curMA * INT_MA;
-                    let intRA = curRA * INT_RA;
+                    let intRA = curRA * INT_RA; 
 
-                    let extraInterestPot = 60000;
-                    if (curRA > 0) {
-                        const raEligible = Math.min(curRA, extraInterestPot);
-                        const raExtra = raEligible * 0.01;
-                        intRA += raExtra;
-                        extraInterestPot -= raEligible;
-                    }
-                    if (extraInterestPot > 0) {
-                        const saEligible = Math.min(curSA, extraInterestPot);
-                        const saExtra = saEligible * 0.01;
-                        intSA += saExtra;
-                        extraInterestPot -= saEligible;
-                    }
-                    if (extraInterestPot > 0) {
-                        const maEligible = Math.min(curMA, extraInterestPot);
-                        const maExtra = maEligible * 0.01;
-                        intMA += maExtra;
-                        extraInterestPot -= maEligible;
-                    }
-                    if (extraInterestPot > 0) {
-                        const oaCap = 20000;
-                        const oaEligible = Math.min(curOA, Math.min(extraInterestPot, oaCap));
-                        const oaExtra = oaEligible * 0.01;
-                        intOA += oaExtra;
+                    if (age < 55) {
+                        // Standard Extra Interest Logic
+                        let extraPot = 60000;
+                        let saPart = Math.min(curSA, extraPot);
+                        intSA += saPart * 0.01;
+                        extraPot -= saPart;
+                        let maPart = Math.min(curMA, extraPot);
+                        intMA += maPart * 0.01;
+                        extraPot -= maPart;
+                        let oaCap = 20000;
+                        let oaPart = Math.min(curOA, extraPot);
+                        oaPart = Math.min(oaPart, oaCap);
+                        intOA += oaPart * 0.01;
+                    } else {
+                        // Age >= 55 Tiered Logic
+                        let tier1_Pot = 30000; 
+                        let tier2_Pot = 30000; 
+                        let oaCapRemaining = 20000;
+
+                        // 1. RA
+                        let raT1 = Math.min(curRA, tier1_Pot);
+                        intRA += raT1 * 0.02; 
+                        tier1_Pot -= raT1;
+                        let raRemaining = curRA - raT1;
+                        let raT2 = Math.min(raRemaining, tier2_Pot);
+                        intRA += raT2 * 0.01; 
+                        tier2_Pot -= raT2;
+
+                        // 2. MA
+                        let maT1 = Math.min(curMA, tier1_Pot);
+                        intMA += maT1 * 0.02;
+                        tier1_Pot -= maT1;
+                        let maRemaining = curMA - maT1;
+                        let maT2 = Math.min(maRemaining, tier2_Pot);
+                        intMA += maT2 * 0.01;
+                        tier2_Pot -= maT2;
+
+                        // 3. OA
+                        let oaEligible = Math.min(curOA, oaCapRemaining);
+                        let oaT1 = Math.min(oaEligible, tier1_Pot);
+                        intOA += oaT1 * 0.02;
+                        tier1_Pot -= oaT1;
+                        let oaRemainingCalc = oaEligible - oaT1;
+                        let oaT2 = Math.min(oaRemainingCalc, tier2_Pot);
+                        intOA += oaT2 * 0.01;
+                        tier2_Pot -= oaT2;
                     }
 
-                    // Update Balances & BHS Check
-                    let nextOA = curOA + contribOA + intOA;
-                    let nextSA = curSA + contribSA + intSA;
-                    let nextMA = curMA + contribMA + intMA;
+                    // Update Balances
+                    let nextOA = curOA + intOA; 
+                    let nextSA = 0;
                     let nextRA = curRA + intRA;
 
+                    if (age >= 55) {
+                        nextRA += contribSA; 
+                        nextSA = 0; 
+                    } else {
+                        nextSA = curSA + contribSA + intSA;
+                    }
+
+                    let nextMA = curMA + contribMA + intMA;
+
+                    // BHS Check
                     if (nextMA > currentYearBHS) {
                         const excessMA = nextMA - currentYearBHS;
                         nextMA = currentYearBHS; 
@@ -300,7 +379,29 @@
                     curMA = nextMA;
                     curRA = nextRA;
 
-                    if (age <= targetAge || age === 65) {
+                    // --- CPF LIFE PAYOUT LOGIC ---
+                    let currentYearPayout = 0;
+                    
+                    // Initialize Payout Base at Age 65
+                    if (age === 65) {
+                        const plan = CPF_LIFE_PLANS[cpfLifePlan];
+                        baseMonthlyPayout = curRA * plan.initialFactor;
+                    }
+
+                    // Calculate Payout Stream for current year (Age 65+)
+                    if (age >= 65) {
+                        const plan = CPF_LIFE_PLANS[cpfLifePlan];
+                        const yearsSince65 = age - 65;
+                        
+                        if (plan.growth > 0) {
+                            currentYearPayout = baseMonthlyPayout * Math.pow(1 + plan.growth, yearsSince65);
+                        } else {
+                            currentYearPayout = baseMonthlyPayout;
+                        }
+                    }
+
+                    // Store Data
+                    if (age <= targetAge || age >= 65 || curYear <= housingLoanEndYear) {
                         data.push({
                             age,
                             year: curYear,
@@ -310,6 +411,10 @@
                             ma: Math.round(curMA),
                             ra: Math.round(curRA),
                             bhs: Math.round(currentYearBHS),
+                            refund: Math.round(refundAccount), 
+                            housingPrincipal: Math.round(cumulativeHousingPrincipal),
+                            housingDeduction: Math.round(annualHousingDeduction),
+                            monthlyPayout: Math.round(currentYearPayout), // New Field
                             total: Math.round(curOA + curSA + curMA + curRA),
                             contrib: Math.round(totalAnnualContribution),
                             interest: Math.round(intOA + intSA + intMA + intRA),
@@ -319,21 +424,25 @@
                     curYear++;
                 }
                 return data;
-            }, [currentAge, targetAge, oaBal, saBal, maBal, bhsLimit, bhsInflates, bhsGrowthRate, monthlySalary, annualBonus, incrementRate, currentYear, retirementScheme, desiredWithdrawal]);
+            }, [currentAge, targetAge, oaBal, saBal, maBal, bhsLimit, bhsInflates, bhsGrowthRate, monthlySalary, annualBonus, incrementRate, currentYear, retirementScheme, desiredWithdrawal, housingUsed, monthlyHousingDeduction, housingLoanEndYear, cpfLifePlan]);
 
             const age55Data = simulation.find(d => d.age === 55);
             const age65Data = simulation.find(d => d.age === 65);
             const finalData = simulation.find(d => d.age === targetAge);
+            const loanEndData = simulation.find(d => d.year === housingLoanEndYear);
 
             const scenarios = useMemo(() => {
                 if (!simulation.length) return null;
                 const yearsTo55 = 55 - currentAge;
-                // Use new 2025 base values for projection
                 const projectedFRS = FRS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                 const projectedBRS = BRS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                 const projectedERS = ERS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
+                
+                // Payout calc at 65 (Standard Plan reference for this summary card)
                 const raAt65 = age65Data ? age65Data.ra : 0;
-                const monthlyPayout = raAt65 * CPF_LIFE_PAYOUT_FACTOR;
+                // We use the USER SELECTED plan for the card now
+                const plan = CPF_LIFE_PLANS[cpfLifePlan];
+                const monthlyPayout = raAt65 * plan.initialFactor;
 
                 return {
                     brs: { val: projectedBRS },
@@ -342,9 +451,13 @@
                     payout: monthlyPayout,
                     raAt65: raAt65
                 };
-            }, [simulation, currentAge, age65Data]);
+            }, [simulation, currentAge, age65Data, cpfLifePlan]);
 
+            const housingData = simulation.filter(d => d.year <= housingLoanEndYear);
             const chartData = simulation.filter(d => d.age <= targetAge);
+            
+            // Payout Chart Data
+            const payoutData = simulation.filter(d => d.age >= payoutViewRange[0] && d.age <= payoutViewRange[1]);
 
             // --- RENDER UI ---
             return (
@@ -526,7 +639,52 @@
                         </div>
                         </div>
 
-                        {/* 3. Retirement Strategy Inputs */}
+                        {/* 3. Housing / Mortgage Section */}
+                        <div className="bg-orange-50 rounded-xl shadow-sm border border-orange-100 p-6">
+                        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-orange-800">
+                            <HomeIcon />
+                            Housing / Mortgage
+                        </h2>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-semibold text-orange-800 uppercase mb-1">Existing OA Used for Housing</label>
+                                <div className="relative">
+                                    <span className="absolute left-3 top-2.5 text-orange-400">$</span>
+                                    <input 
+                                        type="number" 
+                                        value={housingUsed} 
+                                        onChange={(e) => setHousingUsed(Number(e.target.value))}
+                                        className="w-full pl-8 p-2 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none"
+                                        placeholder="Current Principal withdrawn"
+                                    />
+                                </div>
+                                <p className="text-[10px] text-orange-600 mt-1">Accrued interest will be calculated on this + future deductions.</p>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-orange-800 uppercase mb-1">Monthly OA Deduction</label>
+                                <div className="relative">
+                                    <span className="absolute left-3 top-2.5 text-orange-400">$</span>
+                                    <input 
+                                        type="number" 
+                                        value={monthlyHousingDeduction} 
+                                        onChange={(e) => setMonthlyHousingDeduction(Number(e.target.value))}
+                                        className="w-full pl-8 p-2 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none"
+                                    />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-orange-800 uppercase mb-1">HDB Loan Period End Year</label>
+                                <input 
+                                    type="number" 
+                                    value={housingLoanEndYear} 
+                                    onChange={(e) => setHousingLoanEndYear(Number(e.target.value))}
+                                    className="w-full p-2 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none"
+                                />
+                            </div>
+                        </div>
+                        </div>
+
+                        {/* 4. Retirement Strategy Inputs */}
                         <div className="bg-indigo-50 rounded-xl shadow-sm border border-indigo-100 p-6">
                         <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-indigo-900">
                             <ShieldCheckIcon />
@@ -571,6 +729,40 @@
                         </div>
                         </div>
 
+                        {/* 5. CPF LIFE (NEW SECTION) */}
+                        <div className="bg-teal-50 rounded-xl shadow-sm border border-teal-100 p-6">
+                        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-teal-800">
+                            <CoinsIcon />
+                            Retirement Income (Age 65+)
+                        </h2>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-semibold text-teal-800 uppercase mb-1">CPF LIFE Payout Plan</label>
+                                <p className="text-xs text-teal-600 mb-2">Select your preferred payout structure</p>
+                                <div className="flex bg-white rounded-lg p-1 border border-teal-200">
+                                    {['Standard', 'Escalating', 'Basic'].map((plan) => (
+                                    <button
+                                        key={plan}
+                                        onClick={() => setCpfLifePlan(plan)}
+                                        className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                                        cpfLifePlan === plan 
+                                            ? 'bg-teal-600 text-white shadow-sm' 
+                                            : 'text-teal-600 hover:bg-teal-50'
+                                        }`}
+                                    >
+                                        {plan}
+                                    </button>
+                                    ))}
+                                </div>
+                                <div className="mt-2 text-xs text-teal-700 italic">
+                                    {cpfLifePlan === 'Standard' && "Level monthly payouts for life."}
+                                    {cpfLifePlan === 'Escalating' && "Payouts start lower but increase by 2% yearly."}
+                                    {cpfLifePlan === 'Basic' && "Lower payouts, higher bequest (Legacy plan)."}
+                                </div>
+                            </div>
+                        </div>
+                        </div>
+
                     </div>
 
                     {/* RIGHT COLUMN: Results */}
@@ -590,7 +782,7 @@
                                 </p>
                             </div>
                             <div className="mt-4 pt-4 border-t border-slate-100">
-                                <p className="text-sm font-medium text-slate-600 mb-1">Estimated Monthly Payout</p>
+                                <p className="text-sm font-medium text-slate-600 mb-1">Estimated Monthly Payout ({cpfLifePlan})</p>
                                 <p className="text-xl font-bold text-orange-600 flex items-center gap-2">
                                 <BanknoteIcon />
                                 {formatMoney(scenarios?.payout || 0)} / mo
@@ -600,24 +792,19 @@
                             </div>
                         </div>
 
-                        {/* Total Balance Card */}
+                        {/* Property Refund Card */}
                         <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 relative overflow-hidden">
-                            <div className="absolute top-0 right-0 w-24 h-24 bg-blue-50 rounded-bl-full -mr-4 -mt-4 z-0" />
+                            <div className="absolute top-0 right-0 w-24 h-24 bg-teal-50 rounded-bl-full -mr-4 -mt-4 z-0" />
                             <div className="relative z-10">
-                            <p className="text-slate-500 text-sm font-medium">Total Net Worth (CPF) at {targetAge}</p>
+                            <p className="text-slate-500 text-sm font-medium">Property Refund (Accrued Interest Included)</p>
                             <p className="text-3xl font-bold text-slate-900 mt-1">
-                                {formatMoney(finalData?.total || 0)}
+                                {formatMoney(loanEndData ? loanEndData.refund : (simulation[simulation.length-1]?.refund || 0))}
                             </p>
-                            
-                            <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t border-slate-100">
-                                <div>
-                                <span className="text-xs text-slate-500 block">Available Cash (OA+SA)</span>
-                                <span className="text-lg font-bold text-emerald-600">{formatMoney((finalData?.oa || 0) + (finalData?.sa || 0))}</span>
-                                </div>
-                                <div>
-                                <span className="text-xs text-slate-500 block">MediSave (MA)</span>
-                                <span className="text-lg font-bold text-teal-600">{formatMoney(finalData?.ma || 0)}</span>
-                                </div>
+                            <div className="mt-4 pt-4 border-t border-slate-100">
+                                <span className="text-xs text-slate-500 block">At Loan End Year ({housingLoanEndYear})</span>
+                                <span className="text-lg font-bold text-teal-600">
+                                    Refund to OA if sold
+                                </span>
                             </div>
                             </div>
                         </div>
@@ -680,6 +867,65 @@
                         </div>
                         </div>
 
+                        {/* NEW: CPF LIFE Monthly Payout Chart Section */}
+                        {payoutData.length > 0 && (
+                            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                <div className="flex flex-col sm:flex-row items-center justify-between mb-6 gap-4">
+                                    <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                                        <CoinsIcon /> CPF LIFE Monthly Payout Projection
+                                    </h3>
+                                    
+                                    {/* Age Range Toggle Buttons */}
+                                    <div className="flex bg-slate-100 rounded-lg p-1">
+                                        <button
+                                            onClick={() => setPayoutViewRange([65, 75])}
+                                            className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                                                payoutViewRange[0] === 65 ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'
+                                            }`}
+                                        >
+                                            65-75
+                                        </button>
+                                        <button
+                                            onClick={() => setPayoutViewRange([75, 85])}
+                                            className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                                                payoutViewRange[0] === 75 ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'
+                                            }`}
+                                        >
+                                            75-85
+                                        </button>
+                                        <button
+                                            onClick={() => setPayoutViewRange([85, 95])}
+                                            className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                                                payoutViewRange[0] === 85 ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'
+                                            }`}
+                                        >
+                                            85-95
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <div className="h-64 w-full">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart data={payoutData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                            <XAxis dataKey="age" tickLine={false} axisLine={false} tick={{fill: '#64748b'}} />
+                                            <YAxis tickFormatter={(val) => `$${val}`} tickLine={false} axisLine={false} tick={{fill: '#64748b'}} />
+                                            <Tooltip 
+                                                cursor={{fill: '#f1f5f9'}}
+                                                formatter={(value) => [formatMoney(value), "Monthly Payout"]}
+                                                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                            />
+                                            <Bar dataKey="monthlyPayout" fill="#0d9488" name="Monthly Payout" radius={[4, 4, 0, 0]} />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                </div>
+                                <p className="text-xs text-center text-slate-400 mt-2">
+                                    Showing projected monthly payout for ages {payoutViewRange[0]} to {payoutViewRange[1]}. 
+                                    {cpfLifePlan === 'Escalating' && " Note: Payouts increase by 2% annually."}
+                                </p>
+                            </div>
+                        )}
+
                         {/* Retirement Checkpoint Analysis */}
                         {scenarios && (
                         <div className="bg-slate-900 text-white p-6 rounded-xl shadow-lg">
@@ -737,6 +983,8 @@
                                 <th className="px-6 py-3">SA</th>
                                 <th className="px-6 py-3">RA</th>
                                 <th className="px-6 py-3">MA</th>
+                                <th className="px-6 py-3 text-orange-600">Prop Refund</th>
+                                <th className="px-6 py-3 text-teal-600 bg-teal-50">Est. Monthly Payout</th>
                                 <th className="px-6 py-3">Total</th>
                                 </tr>
                             </thead>
@@ -755,6 +1003,10 @@
                                         {formatMoney(row.ma)}
                                         {row.ma >= row.bhs && <span className="block text-[9px] text-red-500 uppercase font-bold">Capped</span>}
                                     </td>
+                                    <td className="px-6 py-3 text-orange-600 font-medium">{formatMoney(row.refund)}</td>
+                                    <td className="px-6 py-3 text-teal-700 bg-teal-50/50 font-medium">
+                                        {row.monthlyPayout > 0 ? formatMoney(row.monthlyPayout) : '-'}
+                                    </td>
                                     <td className="px-6 py-3 font-bold text-slate-800">{formatMoney(row.total)}</td>
                                 </tr>
                                 ))}
@@ -762,6 +1014,41 @@
                             </table>
                         </div>
                         </div>
+
+                        {/* NEW: Property Refund Detailed Breakdown Table */}
+                        {(housingUsed > 0 || monthlyHousingDeduction > 0) && (
+                            <div className="bg-orange-50 rounded-xl shadow-sm border border-orange-200 overflow-hidden mt-6">
+                                <div className="p-4 bg-orange-100 border-b border-orange-200 font-semibold text-orange-800 flex items-center gap-2">
+                                    <HomeIcon /> Property Refund Projection (Principal + Accrued Interest)
+                                </div>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-sm text-left text-slate-600">
+                                        <thead className="bg-orange-50 text-xs text-orange-800 uppercase">
+                                            <tr>
+                                                <th className="px-6 py-3">Age</th>
+                                                <th className="px-6 py-3">Year</th>
+                                                <th className="px-6 py-3">Annual Deduction</th>
+                                                <th className="px-6 py-3">Cumul. Principal Used</th>
+                                                <th className="px-6 py-3">Accrued Interest</th>
+                                                <th className="px-6 py-3 font-bold">Total Refund Value</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {housingData.map((row) => (
+                                                <tr key={row.age} className="border-b border-orange-100 hover:bg-orange-100/50">
+                                                    <td className="px-6 py-3 font-medium text-slate-900">{row.age}</td>
+                                                    <td className="px-6 py-3">{row.year}</td>
+                                                    <td className="px-6 py-3 text-red-500">-{formatMoney(row.housingDeduction)}</td>
+                                                    <td className="px-6 py-3 text-slate-700">{formatMoney(row.housingPrincipal)}</td>
+                                                    <td className="px-6 py-3 text-orange-600">+{formatMoney(row.refund - row.housingPrincipal)}</td>
+                                                    <td className="px-6 py-3 font-bold text-slate-900 bg-orange-100/30">{formatMoney(row.refund)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
 
                     </div>
                     </div>
