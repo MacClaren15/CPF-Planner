@@ -984,7 +984,6 @@
                                 <th className="px-6 py-3">RA</th>
                                 <th className="px-6 py-3">MA</th>
                                 <th className="px-6 py-3 text-orange-600">Prop Refund</th>
-                                <th className="px-6 py-3 text-teal-600 bg-teal-50">Est. Monthly Payout</th>
                                 <th className="px-6 py-3">Total</th>
                                 </tr>
                             </thead>
@@ -1004,9 +1003,6 @@
                                         {row.ma >= row.bhs && <span className="block text-[9px] text-red-500 uppercase font-bold">Capped</span>}
                                     </td>
                                     <td className="px-6 py-3 text-orange-600 font-medium">{formatMoney(row.refund)}</td>
-                                    <td className="px-6 py-3 text-teal-700 bg-teal-50/50 font-medium">
-                                        {row.monthlyPayout > 0 ? formatMoney(row.monthlyPayout) : '-'}
-                                    </td>
                                     <td className="px-6 py-3 font-bold text-slate-800">{formatMoney(row.total)}</td>
                                 </tr>
                                 ))}
