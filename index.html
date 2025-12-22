@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart CPF Calculator</title>
+    <title>Smart CPF Calculator (2026 Ready)</title>
     
     <!-- 1. Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -121,11 +121,12 @@
             { maxAge: 100, oa: 0.0800, sa: 0.0800, ma: 0.8400 },
         ];
 
+        // 2026 UPDATE: Wage Ceiling Schedule
         const WAGE_CEILING_SCHEDULE = [
             { year: 2023, ceiling: 6000 },
             { year: 2024, ceiling: 6800 },
             { year: 2025, ceiling: 7400 },
-            { year: 2026, ceiling: 8000 }, 
+            { year: 2026, ceiling: 8000 }, // Confirmed 2026 Update
         ];
 
         const INT_OA = 0.025;
@@ -187,43 +188,74 @@
             const [retirementScheme, setRetirementScheme] = useState('FRS');
             const [cpfLifePlan, setCpfLifePlan] = useState('Standard'); 
             
-            // Payout View State (NEW)
+            // Payout View State
             const [payoutViewRange, setPayoutViewRange] = useState([65, 75]); 
 
             // Derived State: Simulation Results
             const simulation = useMemo(() => {
-                let data = [];
-                let curOA = oaBal;
-                let curSA = saBal;
-                let curMA = maBal;
+                // Sanitize Inputs for Calculation
+                const runStartAge = currentAge === '' ? 30 : Number(currentAge);
+                const runEndAge = targetAge === '' ? 65 : Number(targetAge);
+                const runMaxAge = Math.max(runEndAge, 95);
+                const simHousingLoanEndYear = housingLoanEndYear === '' ? currentYear : Number(housingLoanEndYear);
+                
+                // Balances & Salary (Defaults to 0 if empty)
+                let curOA = Number(oaBal);
+                let curSA = Number(saBal);
+                let curMA = Number(maBal);
                 let curRA = 0;
-                let curSalary = monthlySalary;
+                let curSalary = Number(monthlySalary);
                 let curYear = currentYear;
                 let isRAFormed = false;
                 
                 // Track Refund Account
-                let refundAccount = housingUsed;
-                let cumulativeHousingPrincipal = housingUsed;
+                let refundAccount = Number(housingUsed);
+                let cumulativeHousingPrincipal = Number(housingUsed);
 
                 // Track Payouts
                 let baseMonthlyPayout = 0;
 
-                const runToAge = Math.max(targetAge, 95); // Ensure calculation runs deep enough
+                let data = [];
 
-                for (let age = currentAge; age <= runToAge; age++) {
+                // 2026 Update Logic: Handle Pre-Existing Senior Closure
+                // If user starts simulation > 55, we must assume SA closes immediately/already closed
+                // Transfer SA balance to RA/OA in Year 1
+                if (runStartAge > 55 && curSA > 0) {
+                     const yearsTo55 = 55 - runStartAge; // Negative, but formula might work, or just use current
+                     // For existing seniors, we check against CURRENT FRS/ERS
+                     // We simplified: Use current BRS/FRS values directly as the requirement
+                     let requiredRA = 0;
+                     if (retirementScheme === 'BRS') requiredRA = BRS_CURRENT;
+                     else if (retirementScheme === 'ERS') requiredRA = ERS_CURRENT;
+                     else requiredRA = FRS_CURRENT;
+
+                     let amountFromSA = Math.min(curSA, requiredRA);
+                     curRA += amountFromSA;
+                     let remainingSA = curSA - amountFromSA;
+                     
+                     // Close SA
+                     curOA += remainingSA;
+                     curSA = 0; 
+                     
+                     // No auto OA top-up here for existing seniors, usually voluntary. 
+                     // We just cleaned up the SA bucket.
+                     isRAFormed = true; 
+                }
+
+                for (let age = runStartAge; age <= runMaxAge; age++) {
                     // BHS Cap Logic
-                    let currentYearBHS = bhsLimit;
+                    let currentYearBHS = Number(bhsLimit);
                     if (bhsInflates) {
                         const effectiveInflationAge = Math.min(age, 65);
-                        const yearsOfInflation = Math.max(0, effectiveInflationAge - currentAge);
+                        const yearsOfInflation = Math.max(0, effectiveInflationAge - runStartAge);
                         if (yearsOfInflation > 0) {
-                            currentYearBHS = bhsLimit * Math.pow(1 + bhsGrowthRate / 100, yearsOfInflation);
+                            currentYearBHS = Number(bhsLimit) * Math.pow(1 + Number(bhsGrowthRate) / 100, yearsOfInflation);
                         }
                     }
 
-                    // --- AGE 55 LOGIC: RA CREATION & SA CLOSURE ---
+                    // --- AGE 55 LOGIC: RA CREATION & SA CLOSURE (Normal Path) ---
                     if (age === 55 && !isRAFormed) {
-                        const yearsTo55 = 55 - currentAge;
+                        const yearsTo55 = 55 - runStartAge;
                         const inflationFactor = Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                         
                         const projBRS = BRS_CURRENT * inflationFactor;
@@ -253,7 +285,7 @@
                         }
 
                         // 4. User Withdrawal
-                        let withdrawAmount = desiredWithdrawal;
+                        let withdrawAmount = Number(desiredWithdrawal);
                         if (curOA >= withdrawAmount) {
                             curOA -= withdrawAmount;
                         } else {
@@ -266,12 +298,20 @@
 
                     // Annual Flow
                     const { rate: totalRate, oa: oaRatio, sa: saRatio, ma: maRatio } = getRates(age);
+                    
+                    // 2026 UPDATE: WAGE CEILING & ANNUAL LIMIT
+                    // Ceiling hits $8,000 in 2026.
                     const owCeiling = getWageCeiling(curYear);
                     const monthlyOW = Math.min(curSalary, owCeiling);
                     const annualOW = monthlyOW * 12;
+                    
+                    // 2026 UPDATE: ANNUAL LIMIT CALCULATION (17 * Monthly Ceiling)
+                    // Previously fixed at 102000. Now dynamic: 17 * 8000 = 136000 by 2026
+                    const cpfAnnualLimit = 17 * owCeiling;
+                    
                     const totalOWSubject = monthlyOW * 12; 
-                    const awCeiling = Math.max(0, 102000 - totalOWSubject);
-                    const taxableBonus = Math.min(annualBonus, awCeiling);
+                    const awCeiling = Math.max(0, cpfAnnualLimit - totalOWSubject);
+                    const taxableBonus = Math.min(Number(annualBonus), awCeiling);
                     const totalAnnualContribution = (annualOW + taxableBonus) * totalRate;
 
                     const contribOA = totalAnnualContribution * oaRatio;
@@ -282,8 +322,8 @@
                     let tempOA = curOA + contribOA;
                     let annualHousingDeduction = 0;
                     
-                    if (curYear <= housingLoanEndYear) {
-                        const requiredDeduction = monthlyHousingDeduction * 12;
+                    if (curYear <= simHousingLoanEndYear) {
+                        const requiredDeduction = Number(monthlyHousingDeduction) * 12;
                         annualHousingDeduction = Math.min(tempOA, requiredDeduction);
                         tempOA -= annualHousingDeduction;
                     }
@@ -401,7 +441,7 @@
                     }
 
                     // Store Data
-                    if (age <= targetAge || age >= 65 || curYear <= housingLoanEndYear) {
+                    if (age <= runEndAge || age >= 65 || curYear <= simHousingLoanEndYear) {
                         data.push({
                             age,
                             year: curYear,
@@ -420,7 +460,7 @@
                             interest: Math.round(intOA + intSA + intMA + intRA),
                         });
                     }
-                    curSalary = curSalary * (1 + incrementRate / 100);
+                    curSalary = curSalary * (1 + Number(incrementRate) / 100);
                     curYear++;
                 }
                 return data;
@@ -428,12 +468,12 @@
 
             const age55Data = simulation.find(d => d.age === 55);
             const age65Data = simulation.find(d => d.age === 65);
-            const finalData = simulation.find(d => d.age === targetAge);
-            const loanEndData = simulation.find(d => d.year === housingLoanEndYear);
+            const finalData = simulation.find(d => d.age === (targetAge === '' ? 65 : Number(targetAge)));
+            const loanEndData = simulation.find(d => d.year === (housingLoanEndYear === '' ? currentYear : Number(housingLoanEndYear)));
 
             const scenarios = useMemo(() => {
                 if (!simulation.length) return null;
-                const yearsTo55 = 55 - currentAge;
+                const yearsTo55 = 55 - (currentAge === '' ? 30 : Number(currentAge));
                 const projectedFRS = FRS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                 const projectedBRS = BRS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                 const projectedERS = ERS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
@@ -453,11 +493,18 @@
                 };
             }, [simulation, currentAge, age65Data, cpfLifePlan]);
 
-            const housingData = simulation.filter(d => d.year <= housingLoanEndYear);
-            const chartData = simulation.filter(d => d.age <= targetAge);
+            const housingData = simulation.filter(d => d.year <= (housingLoanEndYear === '' ? currentYear : Number(housingLoanEndYear)));
+            const chartData = simulation.filter(d => d.age <= (targetAge === '' ? 65 : Number(targetAge)));
             
             // Payout Chart Data
             const payoutData = simulation.filter(d => d.age >= payoutViewRange[0] && d.age <= payoutViewRange[1]);
+
+            // --- INPUT CHANGE HANDLER ---
+            const handleInputChange = (setter) => (e) => {
+                const value = e.target.value;
+                // Allow empty string to clear the input, otherwise parse as number
+                setter(value === '' ? '' : Number(value));
+            };
 
             // --- RENDER UI ---
             return (
@@ -477,7 +524,7 @@
                     </div>
                     <div className="mt-4 md:mt-0 flex items-center gap-3 bg-white px-4 py-2 rounded-lg border border-slate-200 shadow-sm">
                         <span className="text-sm font-medium text-slate-500">Projection Period</span>
-                        <span className="text-blue-700 font-bold">{currentYear} — {currentYear + (targetAge - currentAge)}</span>
+                        <span className="text-blue-700 font-bold">{currentYear} — {currentYear + ((targetAge === '' ? 65 : targetAge) - (currentAge === '' ? 30 : currentAge))}</span>
                     </div>
                     </header>
 
@@ -499,7 +546,7 @@
                                 <input 
                                 type="number" 
                                 value={currentAge} 
-                                onChange={(e) => setCurrentAge(Number(e.target.value))}
+                                onChange={handleInputChange(setCurrentAge)}
                                 className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                                 />
                             </div>
@@ -508,7 +555,7 @@
                                 <input 
                                 type="number" 
                                 value={targetAge} 
-                                onChange={(e) => setTargetAge(Number(e.target.value))}
+                                onChange={handleInputChange(setTargetAge)}
                                 className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                                 />
                             </div>
@@ -520,7 +567,7 @@
                                 <input 
                                 type="number" 
                                 value={monthlySalary} 
-                                onChange={(e) => setMonthlySalary(Number(e.target.value))}
+                                onChange={handleInputChange(setMonthlySalary)}
                                 className="w-full pl-8 p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                                 />
                             </div>
@@ -533,7 +580,7 @@
                                 <input 
                                     type="number" 
                                     value={annualBonus} 
-                                    onChange={(e) => setAnnualBonus(Number(e.target.value))}
+                                    onChange={handleInputChange(setAnnualBonus)}
                                     className="w-full pl-8 p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                                 />
                                 </div>
@@ -545,7 +592,7 @@
                                 <input 
                                     type="number" 
                                     value={incrementRate} 
-                                    onChange={(e) => setIncrementRate(Number(e.target.value))}
+                                    onChange={handleInputChange(setIncrementRate)}
                                     className="w-full pl-8 p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                                 />
                                 </div>
@@ -566,7 +613,7 @@
                             <input 
                                 type="number" 
                                 value={oaBal} 
-                                onChange={(e) => setOaBal(Number(e.target.value))}
+                                onChange={handleInputChange(setOaBal)}
                                 className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                             />
                             </div>
@@ -575,7 +622,7 @@
                             <input 
                                 type="number" 
                                 value={saBal} 
-                                onChange={(e) => setSaBal(Number(e.target.value))}
+                                onChange={handleInputChange(setSaBal)}
                                 className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                             />
                             </div>
@@ -585,7 +632,7 @@
                                 <input 
                                     type="number" 
                                     value={maBal} 
-                                    onChange={(e) => setMaBal(Number(e.target.value))}
+                                    onChange={handleInputChange(setMaBal)}
                                     className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                                 />
                             </div>
@@ -596,7 +643,7 @@
                                 <input 
                                     type="number" 
                                     value={bhsLimit} 
-                                    onChange={(e) => setBhsLimit(Number(e.target.value))}
+                                    onChange={handleInputChange(setBhsLimit)}
                                     className="w-full p-2 border border-red-100 bg-red-50 text-red-800 rounded-lg focus:ring-2 focus:ring-red-500 outline-none"
                                 />
                             </div>
@@ -625,7 +672,7 @@
                                     type="number" 
                                     step="0.1"
                                     value={bhsGrowthRate} 
-                                    onChange={(e) => setBhsGrowthRate(Number(e.target.value))}
+                                    onChange={handleInputChange(setBhsGrowthRate)}
                                     className="w-full p-1.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
                                 />
                                 <span className="absolute right-3 top-1.5 text-slate-400 text-sm">%</span>
@@ -653,7 +700,7 @@
                                     <input 
                                         type="number" 
                                         value={housingUsed} 
-                                        onChange={(e) => setHousingUsed(Number(e.target.value))}
+                                        onChange={handleInputChange(setHousingUsed)}
                                         className="w-full pl-8 p-2 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none"
                                         placeholder="Current Principal withdrawn"
                                     />
@@ -667,7 +714,7 @@
                                     <input 
                                         type="number" 
                                         value={monthlyHousingDeduction} 
-                                        onChange={(e) => setMonthlyHousingDeduction(Number(e.target.value))}
+                                        onChange={handleInputChange(setMonthlyHousingDeduction)}
                                         className="w-full pl-8 p-2 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none"
                                     />
                                 </div>
@@ -677,7 +724,7 @@
                                 <input 
                                     type="number" 
                                     value={housingLoanEndYear} 
-                                    onChange={(e) => setHousingLoanEndYear(Number(e.target.value))}
+                                    onChange={handleInputChange(setHousingLoanEndYear)}
                                     className="w-full p-2 border border-orange-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none"
                                 />
                             </div>
@@ -720,7 +767,7 @@
                                 <input 
                                 type="number" 
                                 value={desiredWithdrawal} 
-                                onChange={(e) => setDesiredWithdrawal(Number(e.target.value))}
+                                onChange={handleInputChange(setDesiredWithdrawal)}
                                 className="w-full pl-8 p-2 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                                 placeholder="e.g. 50000"
                                 />
