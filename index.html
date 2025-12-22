@@ -139,11 +139,11 @@
         const ERS_CURRENT = 426000; 
         const RETIREMENT_SUM_INFLATION = 0.035;
         
-        // CPF LIFE ESTIMATION FACTORS (Approximate)
+        // OLD FACTORS - REPLACED BY DYNAMIC PMT
         const CPF_LIFE_PLANS = {
-            'Standard': { initialFactor: 0.0078, growth: 0 }, 
-            'Escalating': { initialFactor: 0.0063, growth: 0.02 }, 
-            'Basic': { initialFactor: 0.0070, growth: 0 } 
+            'Standard': { growth: 0 }, 
+            'Escalating': { growth: 0.02 }, 
+            'Basic': { growth: 0 } 
         };
 
         // --- 4. HELPER LOGIC ---
@@ -159,6 +159,16 @@
             const contrib = CONTRIBUTION_RATES.find(r => age <= r.maxAge) || CONTRIBUTION_RATES[CONTRIBUTION_RATES.length - 1];
             const alloc = ALLOCATION_RATIOS.find(r => age <= r.maxAge) || ALLOCATION_RATIOS[ALLOCATION_RATIOS.length - 1];
             return { ...contrib, ...alloc };
+        };
+
+        // NEW: Annuity Calculation (PMT)
+        // Rate: interest rate per period
+        // Nper: total number of payments
+        // Pv: present value (RA balance)
+        const calculatePMT = (rate, nper, pv) => {
+            if (rate === 0) return pv / nper;
+            const pvif = Math.pow(1 + rate, nper);
+            return rate * pv * (pvif / (pvif - 1));
         };
 
         // --- 5. MAIN APP COMPONENT ---
@@ -218,12 +228,8 @@
                 let data = [];
 
                 // 2026 Update Logic: Handle Pre-Existing Senior Closure
-                // If user starts simulation > 55, we must assume SA closes immediately/already closed
-                // Transfer SA balance to RA/OA in Year 1
                 if (runStartAge > 55 && curSA > 0) {
-                     const yearsTo55 = 55 - runStartAge; // Negative, but formula might work, or just use current
-                     // For existing seniors, we check against CURRENT FRS/ERS
-                     // We simplified: Use current BRS/FRS values directly as the requirement
+                     const yearsTo55 = 55 - runStartAge; 
                      let requiredRA = 0;
                      if (retirementScheme === 'BRS') requiredRA = BRS_CURRENT;
                      else if (retirementScheme === 'ERS') requiredRA = ERS_CURRENT;
@@ -233,16 +239,15 @@
                      curRA += amountFromSA;
                      let remainingSA = curSA - amountFromSA;
                      
-                     // Close SA
                      curOA += remainingSA;
                      curSA = 0; 
-                     
-                     // No auto OA top-up here for existing seniors, usually voluntary. 
-                     // We just cleaned up the SA bucket.
                      isRAFormed = true; 
                 }
 
                 for (let age = runStartAge; age <= runMaxAge; age++) {
+                    // Start of Year RA (For display & logic)
+                    let startYearRA = curRA;
+
                     // BHS Cap Logic
                     let currentYearBHS = Number(bhsLimit);
                     if (bhsInflates) {
@@ -253,7 +258,7 @@
                         }
                     }
 
-                    // --- AGE 55 LOGIC: RA CREATION & SA CLOSURE (Normal Path) ---
+                    // --- AGE 55 LOGIC ---
                     if (age === 55 && !isRAFormed) {
                         const yearsTo55 = 55 - runStartAge;
                         const inflationFactor = Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
@@ -293,22 +298,17 @@
                             curOA = 0;
                         }
                         
+                        startYearRA = curRA; // Update for consistent display
                         isRAFormed = true;
                     }
 
-                    // Annual Flow
+                    // Annual Flow (Contributions)
                     const { rate: totalRate, oa: oaRatio, sa: saRatio, ma: maRatio } = getRates(age);
                     
-                    // 2026 UPDATE: WAGE CEILING & ANNUAL LIMIT
-                    // Ceiling hits $8,000 in 2026.
                     const owCeiling = getWageCeiling(curYear);
                     const monthlyOW = Math.min(curSalary, owCeiling);
                     const annualOW = monthlyOW * 12;
-                    
-                    // 2026 UPDATE: ANNUAL LIMIT CALCULATION (17 * Monthly Ceiling)
-                    // Previously fixed at 102000. Now dynamic: 17 * 8000 = 136000 by 2026
                     const cpfAnnualLimit = 17 * owCeiling;
-                    
                     const totalOWSubject = monthlyOW * 12; 
                     const awCeiling = Math.max(0, cpfAnnualLimit - totalOWSubject);
                     const taxableBonus = Math.min(Number(annualBonus), awCeiling);
@@ -342,7 +342,6 @@
                     let intRA = curRA * INT_RA; 
 
                     if (age < 55) {
-                        // Standard Extra Interest Logic
                         let extraPot = 60000;
                         let saPart = Math.min(curSA, extraPot);
                         intSA += saPart * 0.01;
@@ -355,12 +354,12 @@
                         oaPart = Math.min(oaPart, oaCap);
                         intOA += oaPart * 0.01;
                     } else {
-                        // Age >= 55 Tiered Logic
+                        // TIERED INTEREST (Age 55+)
                         let tier1_Pot = 30000; 
                         let tier2_Pot = 30000; 
                         let oaCapRemaining = 20000;
 
-                        // 1. RA
+                        // 1. RA Priority
                         let raT1 = Math.min(curRA, tier1_Pot);
                         intRA += raT1 * 0.02; 
                         tier1_Pot -= raT1;
@@ -389,14 +388,65 @@
                         tier2_Pot -= oaT2;
                     }
 
-                    // Update Balances
+                    // --- DRAWDOWN CALCULATION (Age 65) ---
+                    if (age === 65) {
+                        // RECALCULATION: Calculate precise annuity payout to last until age 95
+                        // Using a conservative 4.0% interest assumption for the annuity curve
+                        // Term: 30 years (Age 65 to 95)
+                        const yearsDuration = 95 - 65;
+                        const effectiveRate = 0.04;
+                        baseMonthlyPayout = calculatePMT(effectiveRate / 12, yearsDuration * 12, startYearRA);
+                        
+                        // Plan Modifiers
+                        if (cpfLifePlan === 'Escalating') {
+                            // Start lower (~20%) to allow for 2% growth
+                            baseMonthlyPayout = baseMonthlyPayout * 0.8;
+                        } else if (cpfLifePlan === 'Basic') {
+                            // Basic often starts slightly lower than Standard as well due to bequest logic, simplified here
+                            baseMonthlyPayout = baseMonthlyPayout * 0.9;
+                        }
+                    }
+
+                    // Determine Payout for THIS Year
+                    let currentYearPayout = 0;
+                    if (age >= 65) {
+                        const plan = CPF_LIFE_PLANS[cpfLifePlan];
+                        const yearsSince65 = age - 65;
+                        
+                        if (plan.growth > 0) {
+                            currentYearPayout = baseMonthlyPayout * Math.pow(1 + plan.growth, yearsSince65);
+                        } else {
+                            currentYearPayout = baseMonthlyPayout;
+                        }
+                    }
+
+                    // --- UPDATE BALANCES (End of Year) ---
                     let nextOA = curOA + intOA; 
                     let nextSA = 0;
+                    
+                    // RA Drawdown Logic: Balance + Interest - Payout
                     let nextRA = curRA + intRA;
-
-                    if (age >= 55) {
+                    
+                    if (age >= 55 && age < 65) {
+                        // Pre-payout accumulation
                         nextRA += contribSA; 
-                        nextSA = 0; 
+                    } else if (age >= 65) {
+                        // Post-payout drawdown
+                        // Note: For visualization, we deduct the payout from RA.
+                        // In reality, CPF LIFE pools risk, but this visualizes the value "supporting" the payout.
+                        nextRA -= (currentYearPayout * 12);
+                        if (nextRA < 0) nextRA = 0; // Prevent negative balance visual
+                        
+                        // Age 65+: SA contributions still flow to RA? 
+                        // Actually, new contributions go to RA to boost payouts usually, or OA/SA. 
+                        // Simplified: Assume RA accumulation phase ends at 65 for the "Base Payout", new funds go to RA/OA.
+                        // Let's add contribSA to nextRA to be generous/accurate.
+                        nextRA += contribSA;
+                    }
+                    
+                    // SA Logic
+                    if (age >= 55) {
+                        nextSA = 0; // Closed
                     } else {
                         nextSA = curSA + contribSA + intSA;
                     }
@@ -419,27 +469,6 @@
                     curMA = nextMA;
                     curRA = nextRA;
 
-                    // --- CPF LIFE PAYOUT LOGIC ---
-                    let currentYearPayout = 0;
-                    
-                    // Initialize Payout Base at Age 65
-                    if (age === 65) {
-                        const plan = CPF_LIFE_PLANS[cpfLifePlan];
-                        baseMonthlyPayout = curRA * plan.initialFactor;
-                    }
-
-                    // Calculate Payout Stream for current year (Age 65+)
-                    if (age >= 65) {
-                        const plan = CPF_LIFE_PLANS[cpfLifePlan];
-                        const yearsSince65 = age - 65;
-                        
-                        if (plan.growth > 0) {
-                            currentYearPayout = baseMonthlyPayout * Math.pow(1 + plan.growth, yearsSince65);
-                        } else {
-                            currentYearPayout = baseMonthlyPayout;
-                        }
-                    }
-
                     // Store Data
                     if (age <= runEndAge || age >= 65 || curYear <= simHousingLoanEndYear) {
                         data.push({
@@ -454,7 +483,7 @@
                             refund: Math.round(refundAccount), 
                             housingPrincipal: Math.round(cumulativeHousingPrincipal),
                             housingDeduction: Math.round(annualHousingDeduction),
-                            monthlyPayout: Math.round(currentYearPayout), // New Field
+                            monthlyPayout: Math.round(currentYearPayout), 
                             total: Math.round(curOA + curSA + curMA + curRA),
                             contrib: Math.round(totalAnnualContribution),
                             interest: Math.round(intOA + intSA + intMA + intRA),
@@ -468,6 +497,9 @@
 
             const age55Data = simulation.find(d => d.age === 55);
             const age65Data = simulation.find(d => d.age === 65);
+            // Use End of Year 64 data (which approximates Start of Year 65) for Summary Card display consistency
+            const age64Data = simulation.find(d => d.age === 64);
+            
             const finalData = simulation.find(d => d.age === (targetAge === '' ? 65 : Number(targetAge)));
             const loanEndData = simulation.find(d => d.year === (housingLoanEndYear === '' ? currentYear : Number(housingLoanEndYear)));
 
@@ -478,20 +510,20 @@
                 const projectedBRS = BRS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                 const projectedERS = ERS_CURRENT * Math.pow(1 + RETIREMENT_SUM_INFLATION, yearsTo55);
                 
-                // Payout calc at 65 (Standard Plan reference for this summary card)
-                const raAt65 = age65Data ? age65Data.ra : 0;
-                // We use the USER SELECTED plan for the card now
-                const plan = CPF_LIFE_PLANS[cpfLifePlan];
-                const monthlyPayout = raAt65 * plan.initialFactor;
+                // Get payout directly from simulation (Age 65) to ensure consistency with Start-of-Year logic
+                const monthlyPayout = age65Data ? age65Data.monthlyPayout : 0;
+                
+                // For the RA display, we show what is effectively the premium amount (Start of Year 65)
+                const raAt65Start = age64Data ? age64Data.ra : 0;
 
                 return {
                     brs: { val: projectedBRS },
                     frs: { val: projectedFRS },
                     ers: { val: projectedERS },
                     payout: monthlyPayout,
-                    raAt65: raAt65
+                    raAt65: raAt65Start
                 };
-            }, [simulation, currentAge, age65Data, cpfLifePlan]);
+            }, [simulation, currentAge, age65Data, age64Data]);
 
             const housingData = simulation.filter(d => d.year <= (housingLoanEndYear === '' ? currentYear : Number(housingLoanEndYear)));
             const chartData = simulation.filter(d => d.age <= (targetAge === '' ? 65 : Number(targetAge)));
@@ -822,7 +854,7 @@
                         <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 relative overflow-hidden">
                             <div className="absolute top-0 right-0 w-24 h-24 bg-orange-50 rounded-bl-full -mr-4 -mt-4 z-0" />
                             <div className="relative z-10">
-                            <p className="text-slate-500 text-sm font-medium">Projected RA at Age 65</p>
+                            <p className="text-slate-500 text-sm font-medium">Projected RA at Age 65 (Start)</p>
                             <div className="flex items-end gap-2 mt-1">
                                 <p className="text-3xl font-bold text-slate-900">
                                 {formatMoney(scenarios?.raAt65 || 0)}
@@ -834,7 +866,7 @@
                                 <BanknoteIcon />
                                 {formatMoney(scenarios?.payout || 0)} / mo
                                 </p>
-                                <p className="text-xs text-slate-400 mt-1">Starting from Age 65 (CPF LIFE)</p>
+                                <p className="text-xs text-slate-400 mt-1">Starting from Age 65 (Drawdown to 95)</p>
                             </div>
                             </div>
                         </div>
@@ -1092,6 +1124,41 @@
                                 </div>
                             </div>
                         )}
+
+                        {/* NEW: Salary Progression Table */}
+                        <div className="bg-blue-50 rounded-xl shadow-sm border border-blue-200 overflow-hidden mt-6">
+                            <div className="p-4 bg-blue-100 border-b border-blue-200 font-semibold text-blue-800 flex items-center gap-2">
+                                <BanknoteIcon /> Income Progression Schedule
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm text-left text-slate-600">
+                                    <thead className="bg-blue-50 text-xs text-blue-800 uppercase">
+                                        <tr>
+                                            <th className="px-6 py-3">Age</th>
+                                            <th className="px-6 py-3">Year</th>
+                                            <th className="px-6 py-3">Monthly Salary</th>
+                                            <th className="px-6 py-3">Annual Base (x12)</th>
+                                            <th className="px-6 py-3">Annual Bonus</th>
+                                            <th className="px-6 py-3 font-bold">Total Annual Income</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {chartData.map((row) => (
+                                            <tr key={row.age} className="border-b border-blue-100 hover:bg-blue-100/50">
+                                                <td className="px-6 py-3 font-medium text-slate-900">{row.age}</td>
+                                                <td className="px-6 py-3">{row.year}</td>
+                                                <td className="px-6 py-3 text-slate-700">{formatMoney(row.salary)}</td>
+                                                <td className="px-6 py-3 text-slate-700">{formatMoney(row.salary * 12)}</td>
+                                                <td className="px-6 py-3 text-slate-500">{formatMoney(annualBonus)}</td>
+                                                <td className="px-6 py-3 font-bold text-blue-700 bg-blue-100/30">
+                                                    {formatMoney((row.salary * 12) + Number(annualBonus))}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
 
                     </div>
                     </div>
